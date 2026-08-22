@@ -56,6 +56,7 @@ install(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(launch_testing_ament_cmake REQUIRED)
 
   ament_add_gtest(test_velocity_guard
     test/test_velocity_guard.cpp
@@ -64,6 +65,11 @@ if(BUILD_TESTING)
   target_link_libraries(
     test_velocity_guard
     velocity_guard_lib
+  )
+
+  add_launch_test(
+    test/test_velocity_guard_launch.py
+    TIMEOUT 30
   )
 endif()
 
