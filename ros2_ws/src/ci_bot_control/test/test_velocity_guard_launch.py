@@ -20,6 +20,7 @@ def generate_test_description():
             {
                 "max_linear_velocity": 0.5,
                 "max_angular_velocity": 1.5,
+                "command_timeout_seconds": 0.5,
             }
         ],
     )
@@ -94,6 +95,28 @@ class TestVelocityGuardCommunication(unittest.TestCase):
 
         self.fail("Timed out waiting for /cmd_vel output")
 
+    def wait_for_stop_command(self, timeout_sec=2.0):
+        self.received_messages.clear()
+
+        deadline = time.monotonic() + timeout_sec
+
+        while time.monotonic() < deadline:
+            rclpy.spin_once(
+                self.node,
+                timeout_sec=0.1,
+            )
+
+            for message in self.received_messages:
+                if (
+                    abs(message.linear.x) < 1e-9
+                    and abs(message.angular.z) < 1e-9
+                ):
+                    return message
+
+        self.fail(
+            "Timed out waiting for watchdog stop command"
+        )
+
     def test_valid_command_passes_through(self):
         result = self.publish_command(
             linear_x=0.3,
@@ -124,6 +147,34 @@ class TestVelocityGuardCommunication(unittest.TestCase):
         self.assertAlmostEqual(
             result.angular.z,
             -1.5,
+        )
+
+    def test_watchdog_stops_robot_after_timeout(self):
+        result = self.publish_command(
+            linear_x=0.4,
+            angular_z=0.2,
+        )
+
+        self.assertAlmostEqual(
+            result.linear.x,
+            0.4,
+        )
+
+        self.assertAlmostEqual(
+            result.angular.z,
+            0.2,
+        )
+
+        stop_command = self.wait_for_stop_command()
+
+        self.assertAlmostEqual(
+            stop_command.linear.x,
+            0.0,
+        )
+
+        self.assertAlmostEqual(
+            stop_command.angular.z,
+            0.0,
         )
 
 
