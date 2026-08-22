@@ -1,0 +1,74 @@
+# --- ROS 2 / colcon build artifacts ---
+build/
+install/
+log/
+logs/
+devel/
+.colcon/
+*.colcon_install_layout
+COLCON_IGNORE
+AMENT_IGNORE
+CATKIN_IGNORE
+.catkin_tools/
+rosdep_cache/
+
+# Test / coverage output
+coverage/
+coverage.xml
+coverage.info
+htmlcov/
+lcov.info
+.coverage
+.coverage.*
+test_results/
+*.gcda
+*.gcno
+*.gcov
+.pytest_cache/
+.tox/
+junit*.xml
+
+# Recorded data
+*.bag
+*.db3
+*.mcap
+rosbag2_*/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+sdist/
+wheels/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+ENV/
+
+# --- Editors / IDEs ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.\#*
+\#*\#
+*.sublime-workspace
+*.sublime-project
+
+# --- OS / misc ---
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+.env
+.env.local

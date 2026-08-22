@@ -1,0 +1,55 @@
+# Development / CI container for this repository only.
+# Isolation guarantees:
+#   * no host networking (uses Compose's private bridge network)
+#   * /opt/ros is NOT mounted from the host
+#   * no other ROS workspace is mounted
+#   * only this repository is mounted, at /workspace
+name: ros2-ci-robot
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Match the host user so files written into /workspace are not root-owned.
+        USER_UID: "${USER_UID:-1000}"
+        USER_GID: "${USER_GID:-1000}"
+    image: ros2-ci-robot:jazzy
+    container_name: ros2-ci-robot-dev
+    hostname: ros2-ci-robot
+
+    working_dir: /workspace
+
+    volumes:
+      # This repository, and nothing else.
+      - type: bind
+        source: .
+        target: /workspace
+
+    environment:
+      ROS_DOMAIN_ID: "77"
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      # Headless Gazebo / Qt so the container never needs the host display.
+      QT_QPA_PLATFORM: offscreen
+      GZ_SIM_HEADLESS: "1"
+
+    # Explicitly NOT network_mode: host. Compose puts this service on its own
+    # private bridge network, isolated from the host's ROS 2 domain.
+    networks:
+      - ros2_ci_net
+
+    # Shared memory for DDS / Gazebo; the default 64MB is too small.
+    shm_size: "1gb"
+
+    # Keep an interactive development container alive:
+    #   docker compose up -d
+    #   docker compose exec dev bash
+    init: true
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]
+
+networks:
+  ros2_ci_net:
+    driver: bridge
