@@ -23,6 +23,18 @@
   </material>
 
   <!-- =============================================================== -->
+  <!-- Inertial-free root frame for KDL / robot_state_publisher -->
+  <!-- =============================================================== -->
+
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- =============================================================== -->
   <!-- Main chassis -->
   <!-- =============================================================== -->
 
