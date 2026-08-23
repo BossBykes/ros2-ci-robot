@@ -67,6 +67,24 @@ def generate_launch_description():
         ],
     )
 
+    velocity_guard = Node(
+        package="ci_bot_control",
+        executable="velocity_guard_node",
+        name="velocity_guard",
+        output="screen",
+    )
+
+    bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="ros_gz_bridge",
+        arguments=[
+            "/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
+            "/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry",
+        ],
+        output="screen",
+    )
+
     spawn_robot = TimerAction(
         period=2.0,
         actions=[
@@ -90,6 +108,8 @@ def generate_launch_description():
         [
             gazebo,
             robot_state_publisher,
+            velocity_guard,
+            bridge,
             spawn_robot,
         ]
     )

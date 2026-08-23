@@ -9,8 +9,12 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <exec_depend>ci_bot_control</exec_depend>
   <exec_depend>ci_bot_description</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
   <exec_depend>ros_gz_sim</exec_depend>
   <exec_depend>xacro</exec_depend>
 
