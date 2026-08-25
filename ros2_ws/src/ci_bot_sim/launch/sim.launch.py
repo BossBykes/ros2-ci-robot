@@ -3,9 +3,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import ExecuteProcess
 from launch.actions import TimerAction
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 from launch_ros.actions import Node
 
@@ -19,10 +18,6 @@ def generate_launch_description():
 
     sim_share = get_package_share_directory(
         "ci_bot_sim"
-    )
-
-    ros_gz_sim_share = get_package_share_directory(
-        "ros_gz_sim"
     )
 
     xacro_file = os.path.join(
@@ -41,17 +36,21 @@ def generate_launch_description():
         xacro_file
     ).toxml()
 
-    gazebo = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                ros_gz_sim_share,
-                "launch",
-                "gz_sim.launch.py",
-            )
-        ),
-        launch_arguments={
-            "gz_args": f"-r -s -v 2 {world_file}",
-        }.items(),
+    gazebo = ExecuteProcess(
+        cmd=[
+            "gz",
+            "sim",
+            "-r",
+            "-s",
+            "-v",
+            "2",
+            world_file,
+            "--force-version",
+            "8",
+        ],
+        name="gazebo",
+        output="screen",
+        shell=False,
     )
 
     robot_state_publisher = Node(

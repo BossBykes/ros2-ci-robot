@@ -10,4 +10,13 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(launch_testing_ament_cmake REQUIRED)
+
+  add_launch_test(
+    test/test_gazebo_movement.py
+    TIMEOUT 40
+  )
+endif()
+
 ament_package()
