@@ -233,6 +233,41 @@
   </joint>
 
   <!-- =============================================================== -->
+  <!-- Gazebo LiDAR sensor -->
+  <!-- =============================================================== -->
+
+  <gazebo reference="laser_frame">
+    <sensor name="gpu_lidar" type="gpu_lidar">
+      <topic>/scan_raw</topic>
+      <gz_frame_id>laser_frame</gz_frame_id>
+      <update_rate>10</update_rate>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-${pi}</min_angle>
+            <max_angle>${pi}</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>1</samples>
+            <resolution>1</resolution>
+            <min_angle>0.0</min_angle>
+            <max_angle>0.0</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.08</min>
+          <max>8.0</max>
+          <resolution>0.01</resolution>
+        </range>
+      </lidar>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+    </sensor>
+  </gazebo>
+
+  <!-- =============================================================== -->
   <!-- Gazebo differential-drive system -->
   <!-- =============================================================== -->
 

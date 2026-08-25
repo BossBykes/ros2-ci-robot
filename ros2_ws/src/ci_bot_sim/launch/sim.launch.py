@@ -74,6 +74,25 @@ def generate_launch_description():
         output="screen",
     )
 
+    scan_fault_injector = Node(
+        package="ci_bot_fault_injection",
+        executable="scan_fault_injector",
+        name="scan_fault_injector",
+        output="screen",
+        parameters=[
+            {
+                "fault_mode": "normal",
+            }
+        ],
+    )
+
+    sensor_health_monitor = Node(
+        package="ci_bot_monitor",
+        executable="sensor_health_monitor",
+        name="sensor_health_monitor",
+        output="screen",
+    )
+
     bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
@@ -81,6 +100,7 @@ def generate_launch_description():
         arguments=[
             "/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
             "/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry",
+            "/scan_raw@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan",
         ],
         output="screen",
     )
@@ -109,6 +129,8 @@ def generate_launch_description():
             gazebo,
             robot_state_publisher,
             velocity_guard,
+            scan_fault_injector,
+            sensor_health_monitor,
             bridge,
             spawn_robot,
         ]
