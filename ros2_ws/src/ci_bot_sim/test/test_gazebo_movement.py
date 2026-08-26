@@ -17,6 +17,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 import launch_testing
 
 import rclpy
+from rclpy.parameter import Parameter
+from rclpy.parameter_client import AsyncParameterClient
 
 
 def generate_test_description():
@@ -91,6 +93,11 @@ class TestGazeboMovement(unittest.TestCase):
             10,
         )
 
+        cls.fault_parameter_client = AsyncParameterClient(
+            cls.node,
+            "scan_fault_injector",
+        )
+
     @classmethod
     def tearDownClass(cls):
         cls.node.destroy_node()
@@ -111,6 +118,85 @@ class TestGazeboMovement(unittest.TestCase):
             return level[0]
 
         return int(level)
+
+    @staticmethod
+    def status_by_name(diagnostics, name):
+        for status in diagnostics.status:
+            if status.name == name:
+                return status
+
+        return None
+
+    def set_fault_mode(
+        self,
+        mode,
+        timeout_sec=5.0,
+    ):
+        services_available = (
+            self.fault_parameter_client.wait_for_services(
+                timeout_sec=timeout_sec
+            )
+        )
+
+        self.assertTrue(
+            services_available,
+            (
+                "Timed out waiting for scan_fault_injector "
+                "parameter services"
+            ),
+        )
+
+        future = self.fault_parameter_client.set_parameters(
+            [
+                Parameter(
+                    "fault_mode",
+                    value=mode,
+                )
+            ]
+        )
+
+        rclpy.spin_until_future_complete(
+            self.node,
+            future,
+            timeout_sec=timeout_sec,
+        )
+
+        self.assertTrue(
+            future.done(),
+            (
+                "Timed out setting scan_fault_injector "
+                f"fault_mode={mode}"
+            ),
+        )
+
+        response = future.result()
+
+        self.assertIsNotNone(
+            response,
+            (
+                "scan_fault_injector parameter service "
+                "returned no response"
+            ),
+        )
+
+        results = response.results
+
+        self.assertEqual(
+            len(results),
+            1,
+            (
+                "Unexpected number of results while setting "
+                "scan_fault_injector fault_mode"
+            ),
+        )
+
+        self.assertTrue(
+            results[0].successful,
+            (
+                "Failed to set scan_fault_injector "
+                f"fault_mode={mode}: {results[0].reason}"
+            ),
+        )
 
     def wait_for_odometry(self, timeout_sec=10.0):
         deadline = time.monotonic() + timeout_sec
@@ -146,6 +232,34 @@ class TestGazeboMovement(unittest.TestCase):
 
         return None
 
+    def find_nan_scan_pair(self):
+        forwarded_by_stamp = {
+            self.stamp_key(message): message
+            for message in self.received_scans
+        }
+
+        for raw_scan in reversed(
+            self.received_raw_scans
+        ):
+            forwarded_scan = forwarded_by_stamp.get(
+                self.stamp_key(raw_scan)
+            )
+
+            if forwarded_scan is None:
+                continue
+
+            if (
+                raw_scan.ranges
+                and forwarded_scan.ranges
+                and not math.isnan(raw_scan.ranges[0])
+                and math.isnan(
+                    forwarded_scan.ranges[0]
+                )
+            ):
+                return raw_scan, forwarded_scan
+
+        return None
+
     def find_healthy_diagnostics(self):
         expected_ok_level = self.diagnostic_level_value(
             DiagnosticStatus.OK
@@ -154,16 +268,13 @@ class TestGazeboMovement(unittest.TestCase):
         for diagnostics in reversed(
             self.received_diagnostics
         ):
-            statuses = {
-                status.name: status
-                for status in diagnostics.status
-            }
-
-            scan_status = statuses.get(
-                "ci_bot/scan"
+            scan_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/scan",
             )
-            odom_status = statuses.get(
-                "ci_bot/odom"
+            odom_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/odom",
             )
 
             if (
@@ -178,6 +289,51 @@ class TestGazeboMovement(unittest.TestCase):
                 )
                 == expected_ok_level
                 and scan_status.message == "OK"
+                and odom_status.message == "OK"
+            ):
+                return diagnostics
+
+        return None
+
+    def find_fault_diagnostics(
+        self,
+        expected_scan_message,
+    ):
+        expected_ok_level = self.diagnostic_level_value(
+            DiagnosticStatus.OK
+        )
+
+        expected_error_level = (
+            self.diagnostic_level_value(
+                DiagnosticStatus.ERROR
+            )
+        )
+
+        for diagnostics in reversed(
+            self.received_diagnostics
+        ):
+            scan_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/scan",
+            )
+            odom_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/odom",
+            )
+
+            if (
+                scan_status is not None
+                and odom_status is not None
+                and self.diagnostic_level_value(
+                    scan_status.level
+                )
+                == expected_error_level
+                and scan_status.message
+                == expected_scan_message
+                and self.diagnostic_level_value(
+                    odom_status.level
+                )
+                == expected_ok_level
                 and odom_status.message == "OK"
             ):
                 return diagnostics
@@ -219,7 +375,69 @@ class TestGazeboMovement(unittest.TestCase):
             "LiDAR -> fault injector -> diagnostics pipeline"
         )
 
+    def wait_for_nan_fault_response(
+        self,
+        timeout_sec=5.0,
+    ):
+        deadline = time.monotonic() + timeout_sec
+
+        while time.monotonic() < deadline:
+            rclpy.spin_once(
+                self.node,
+                timeout_sec=0.1,
+            )
+
+            scan_pair = self.find_nan_scan_pair()
+
+            diagnostics = self.find_fault_diagnostics(
+                "INVALID_DATA"
+            )
+
+            if (
+                scan_pair is not None
+                and diagnostics is not None
+            ):
+                return (
+                    scan_pair[0],
+                    scan_pair[1],
+                    diagnostics,
+                )
+
+        self.fail(
+            "Timed out waiting for NaN fault to produce "
+            "corrupted /scan and INVALID_DATA diagnostics"
+        )
+
+    def wait_for_drop_fault_response(
+        self,
+        timeout_sec=5.0,
+    ):
+        deadline = time.monotonic() + timeout_sec
+
+        while time.monotonic() < deadline:
+            rclpy.spin_once(
+                self.node,
+                timeout_sec=0.1,
+            )
+
+            diagnostics = self.find_fault_diagnostics(
+                "SENSOR_TIMEOUT"
+            )
+
+            if (
+                self.received_raw_scans
+                and diagnostics is not None
+            ):
+                return diagnostics
+
+        self.fail(
+            "Timed out waiting for dropped /scan stream "
+            "to produce SENSOR_TIMEOUT diagnostics"
+        )
+
     def test_gazebo_lidar_pipeline_is_healthy(self):
+        self.set_fault_mode("normal")
+
         self.received_raw_scans.clear()
         self.received_scans.clear()
         self.received_diagnostics.clear()
@@ -400,3 +618,177 @@ class TestGazeboMovement(unittest.TestCase):
                 f"displacement={displacement:.3f}"
             ),
         )
+
+    def test_scan_drop_fault_reports_timeout(self):
+        self.set_fault_mode("normal")
+
+        self.received_raw_scans.clear()
+        self.received_scans.clear()
+        self.received_diagnostics.clear()
+
+        try:
+            self.set_fault_mode("drop")
+
+            self.received_raw_scans.clear()
+            self.received_scans.clear()
+            self.received_diagnostics.clear()
+
+            diagnostics = (
+                self.wait_for_drop_fault_response()
+            )
+
+            self.assertTrue(
+                self.received_raw_scans,
+                (
+                    "Gazebo /scan_raw stopped during "
+                    "drop fault injection"
+                ),
+            )
+
+            scan_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/scan",
+            )
+
+            odom_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/odom",
+            )
+
+            expected_error_level = (
+                self.diagnostic_level_value(
+                    DiagnosticStatus.ERROR
+                )
+            )
+
+            expected_ok_level = (
+                self.diagnostic_level_value(
+                    DiagnosticStatus.OK
+                )
+            )
+
+            self.assertEqual(
+                self.diagnostic_level_value(
+                    scan_status.level
+                ),
+                expected_error_level,
+            )
+
+            self.assertEqual(
+                scan_status.message,
+                "SENSOR_TIMEOUT",
+            )
+
+            self.assertEqual(
+                self.diagnostic_level_value(
+                    odom_status.level
+                ),
+                expected_ok_level,
+            )
+
+            self.assertEqual(
+                odom_status.message,
+                "OK",
+            )
+        finally:
+            self.set_fault_mode("normal")
+
+    def test_scan_nan_fault_reports_invalid_data(self):
+        self.set_fault_mode("normal")
+
+        self.received_raw_scans.clear()
+        self.received_scans.clear()
+        self.received_diagnostics.clear()
+
+        try:
+            self.set_fault_mode("nan")
+
+            self.received_raw_scans.clear()
+            self.received_scans.clear()
+            self.received_diagnostics.clear()
+
+            (
+                raw_scan,
+                forwarded_scan,
+                diagnostics,
+            ) = self.wait_for_nan_fault_response()
+
+            self.assertEqual(
+                self.stamp_key(raw_scan),
+                self.stamp_key(forwarded_scan),
+            )
+
+            self.assertFalse(
+                math.isnan(raw_scan.ranges[0]),
+                (
+                    "Gazebo /scan_raw was unexpectedly "
+                    "NaN-corrupted"
+                ),
+            )
+
+            self.assertTrue(
+                math.isnan(
+                    forwarded_scan.ranges[0]
+                ),
+                (
+                    "NaN fault did not corrupt "
+                    "/scan ranges[0]"
+                ),
+            )
+
+            self.assertEqual(
+                list(raw_scan.ranges[1:]),
+                list(forwarded_scan.ranges[1:]),
+                (
+                    "NaN fault changed ranges other "
+                    "than ranges[0]"
+                ),
+            )
+
+            scan_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/scan",
+            )
+
+            odom_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/odom",
+            )
+
+            expected_error_level = (
+                self.diagnostic_level_value(
+                    DiagnosticStatus.ERROR
+                )
+            )
+
+            expected_ok_level = (
+                self.diagnostic_level_value(
+                    DiagnosticStatus.OK
+                )
+            )
+
+            self.assertEqual(
+                self.diagnostic_level_value(
+                    scan_status.level
+                ),
+                expected_error_level,
+            )
+
+            self.assertEqual(
+                scan_status.message,
+                "INVALID_DATA",
+            )
+
+            self.assertEqual(
+                self.diagnostic_level_value(
+                    odom_status.level
+                ),
+                expected_ok_level,
+            )
+
+            self.assertEqual(
+                odom_status.message,
+                "OK",
+            )
+        finally:
+            self.set_fault_mode("normal")
