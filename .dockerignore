@@ -1,0 +1,39 @@
+# Git metadata
+.git
+.gitignore
+
+# Editor / IDE state
+.vscode
+.idea
+
+# ROS 2 / colcon generated artifacts
+ros2_ws/build
+ros2_ws/install
+ros2_ws/log
+
+# Python generated artifacts
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+
+# Test / coverage artifacts
+coverage
+htmlcov
+test_results
+*.gcda
+*.gcno
+*.gcov
+junit*.xml
+coverage.xml
+coverage.info
+lcov.info
+
+# Local environments and temporary files
+.venv
+venv
+env
+.env
+.env.local
+*.log
+*.tmp

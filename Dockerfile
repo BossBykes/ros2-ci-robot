@@ -64,11 +64,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
-# The ROS Noble base image already contains the "ubuntu" user with UID/GID
-# 1000. Reuse it instead of deleting/recreating users.
+# The ROS Noble base image already contains the "ubuntu" user/group.
+# Remap that existing account to the requested host UID/GID so bind-mounted
+# repository files remain writable both locally and on CI runners.
 # ---------------------------------------------------------------------------
-RUN mkdir -p /workspace \
-    && chown "${USER_UID}:${USER_GID}" /workspace \
+RUN if [ "$(id -g ubuntu)" != "${USER_GID}" ]; then \
+      groupmod --gid "${USER_GID}" ubuntu; \
+    fi \
+    && if [ "$(id -u ubuntu)" != "${USER_UID}" ]; then \
+      usermod --uid "${USER_UID}" --gid "${USER_GID}" ubuntu; \
+    else \
+      usermod --gid "${USER_GID}" ubuntu; \
+    fi \
+    && mkdir -p /workspace \
+    && chown -R "${USER_UID}:${USER_GID}" /home/ubuntu /workspace \
     && echo "ubuntu ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ubuntu \
     && chmod 0440 /etc/sudoers.d/ubuntu
 
@@ -94,7 +103,7 @@ ENV ROS_DOMAIN_ID=77 \
 
 USER root
 
-COPY --chown=1000:1000 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
