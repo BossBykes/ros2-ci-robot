@@ -1,0 +1,122 @@
+name: ROS 2 CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ros2-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: ROS 2 Jazzy / Gazebo Regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Capture runner UID and GID
+        id: runner
+        shell: bash
+        run: |
+          echo "uid=$(id -u)" >> "$GITHUB_OUTPUT"
+          echo "gid=$(id -g)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build CI Docker image
+        id: docker-build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: ros2-ci-robot:ci
+          build-args: |
+            USER_UID=${{ steps.runner.outputs.uid }}
+            USER_GID=${{ steps.runner.outputs.gid }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build ROS 2 workspace
+        id: ros-build
+        shell: bash
+        run: |
+          docker run --rm --init \
+            --shm-size=1g \
+            --env ROS_DOMAIN_ID=77 \
+            --env RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+            --env QT_QPA_PLATFORM=offscreen \
+            --env GZ_SIM_HEADLESS=1 \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            ros2-ci-robot:ci \
+            bash -lc 'cd /workspace/ros2_ws && timeout --signal=INT --kill-after=10s 180s colcon build --symlink-install'
+
+      - name: Run complete ROS 2 regression suite
+        id: ros-test
+        shell: bash
+        run: |
+          docker run --rm --init \
+            --shm-size=1g \
+            --env ROS_DOMAIN_ID=77 \
+            --env RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+            --env QT_QPA_PLATFORM=offscreen \
+            --env GZ_SIM_HEADLESS=1 \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            ros2-ci-robot:ci \
+            bash -lc 'cd /workspace/ros2_ws && source install/setup.bash && timeout --signal=INT --kill-after=10s 120s colcon test --return-code-on-test-failure'
+
+      - name: Report ROS 2 test results
+        if: always() && steps.ros-build.outcome == 'success'
+        shell: bash
+        run: |
+          set +e
+
+          result_output="$(
+            docker run --rm --init \
+              --shm-size=1g \
+              --env ROS_DOMAIN_ID=77 \
+              --env RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+              --env QT_QPA_PLATFORM=offscreen \
+              --env GZ_SIM_HEADLESS=1 \
+              --volume "$GITHUB_WORKSPACE:/workspace" \
+              ros2-ci-robot:ci \
+              bash -lc 'cd /workspace/ros2_ws && colcon test-result --verbose' \
+              2>&1
+          )"
+          result_status=$?
+
+          set -e
+
+          printf '%s\n' "$result_output"
+
+          {
+            echo "## ROS 2 test results"
+            echo
+            echo '```text'
+            printf '%s\n' "$result_output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$result_status"
+
+      - name: Upload ROS 2 test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ros2-test-results-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ros2_ws/build/**/test_results/**
+            ros2_ws/build/**/pytest.xml
+            ros2_ws/build/**/Testing/**
+            ros2_ws/log/**
