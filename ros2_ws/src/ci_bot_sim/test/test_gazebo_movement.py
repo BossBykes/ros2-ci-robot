@@ -113,6 +113,14 @@ class TestGazeboMovement(unittest.TestCase):
         )
 
     @staticmethod
+    def stamp_nanoseconds(message):
+        return (
+            int(message.header.stamp.sec)
+            * 1_000_000_000
+            + int(message.header.stamp.nanosec)
+        )
+
+    @staticmethod
     def diagnostic_level_value(level):
         if isinstance(level, (bytes, bytearray)):
             return level[0]
@@ -260,6 +268,53 @@ class TestGazeboMovement(unittest.TestCase):
 
         return None
 
+    def find_stale_scan_pair(
+        self,
+        stale_offset_seconds=5.0,
+    ):
+        offset_nanoseconds = int(
+            stale_offset_seconds
+            * 1_000_000_000
+        )
+
+        forwarded_by_stamp = {
+            self.stamp_key(message): message
+            for message in self.received_scans
+        }
+
+        for raw_scan in reversed(
+            self.received_raw_scans
+        ):
+            raw_nanoseconds = (
+                self.stamp_nanoseconds(raw_scan)
+            )
+
+            if raw_nanoseconds <= offset_nanoseconds:
+                continue
+
+            expected_nanoseconds = (
+                raw_nanoseconds
+                - offset_nanoseconds
+            )
+
+            expected_stamp = (
+                expected_nanoseconds
+                // 1_000_000_000,
+                expected_nanoseconds
+                % 1_000_000_000,
+            )
+
+            forwarded_scan = (
+                forwarded_by_stamp.get(
+                    expected_stamp
+                )
+            )
+
+            if forwarded_scan is not None:
+                return raw_scan, forwarded_scan
+
+        return None
+
     def find_healthy_diagnostics(self):
         expected_ok_level = self.diagnostic_level_value(
             DiagnosticStatus.OK
@@ -339,6 +394,38 @@ class TestGazeboMovement(unittest.TestCase):
                 return diagnostics
 
         return None
+
+    def wait_for_raw_scan_after(
+        self,
+        minimum_stamp_seconds,
+        timeout_sec=8.0,
+    ):
+        minimum_nanoseconds = int(
+            minimum_stamp_seconds
+            * 1_000_000_000
+        )
+
+        deadline = time.monotonic() + timeout_sec
+
+        while time.monotonic() < deadline:
+            rclpy.spin_once(
+                self.node,
+                timeout_sec=0.1,
+            )
+
+            for raw_scan in reversed(
+                self.received_raw_scans
+            ):
+                if (
+                    self.stamp_nanoseconds(raw_scan)
+                    > minimum_nanoseconds
+                ):
+                    return raw_scan
+
+        self.fail(
+            "Timed out waiting for Gazebo /scan_raw "
+            f"timestamp > {minimum_stamp_seconds:.1f}s"
+        )
 
     def wait_for_sensor_pipeline(
         self,
@@ -432,6 +519,41 @@ class TestGazeboMovement(unittest.TestCase):
 
         self.fail(
             "Timed out waiting for dropped /scan stream "
+            "to produce SENSOR_TIMEOUT diagnostics"
+        )
+
+    def wait_for_stale_fault_response(
+        self,
+        timeout_sec=5.0,
+    ):
+        deadline = time.monotonic() + timeout_sec
+
+        while time.monotonic() < deadline:
+            rclpy.spin_once(
+                self.node,
+                timeout_sec=0.1,
+            )
+
+            scan_pair = self.find_stale_scan_pair(
+                stale_offset_seconds=5.0,
+            )
+
+            diagnostics = self.find_fault_diagnostics(
+                "SENSOR_TIMEOUT"
+            )
+
+            if (
+                scan_pair is not None
+                and diagnostics is not None
+            ):
+                return (
+                    scan_pair[0],
+                    scan_pair[1],
+                    diagnostics,
+                )
+
+        self.fail(
+            "Timed out waiting for stale /scan timestamp "
             "to produce SENSOR_TIMEOUT diagnostics"
         )
 
@@ -777,6 +899,122 @@ class TestGazeboMovement(unittest.TestCase):
             self.assertEqual(
                 scan_status.message,
                 "INVALID_DATA",
+            )
+
+            self.assertEqual(
+                self.diagnostic_level_value(
+                    odom_status.level
+                ),
+                expected_ok_level,
+            )
+
+            self.assertEqual(
+                odom_status.message,
+                "OK",
+            )
+        finally:
+            self.set_fault_mode("normal")
+
+    def test_scan_stale_fault_reports_timeout(self):
+        self.set_fault_mode("normal")
+
+        self.received_raw_scans.clear()
+        self.received_scans.clear()
+        self.received_diagnostics.clear()
+
+        self.wait_for_raw_scan_after(
+            minimum_stamp_seconds=5.5,
+        )
+
+        try:
+            self.set_fault_mode("stale")
+
+            self.received_raw_scans.clear()
+            self.received_scans.clear()
+            self.received_diagnostics.clear()
+
+            (
+                raw_scan,
+                forwarded_scan,
+                diagnostics,
+            ) = self.wait_for_stale_fault_response()
+
+            self.assertGreater(
+                self.stamp_nanoseconds(raw_scan),
+                5_000_000_000,
+                (
+                    "Gazebo /scan_raw timestamp was not "
+                    "large enough for stale injection"
+                ),
+            )
+
+            self.assertNotEqual(
+                self.stamp_nanoseconds(
+                    forwarded_scan
+                ),
+                0,
+                (
+                    "Stale fault unexpectedly produced "
+                    "a zero timestamp"
+                ),
+            )
+
+            timestamp_difference = (
+                self.stamp_nanoseconds(raw_scan)
+                - self.stamp_nanoseconds(
+                    forwarded_scan
+                )
+            )
+
+            self.assertEqual(
+                timestamp_difference,
+                5_000_000_000,
+                (
+                    "Stale fault did not shift the "
+                    "LaserScan timestamp by exactly 5.0 s"
+                ),
+            )
+
+            self.assertEqual(
+                list(raw_scan.ranges),
+                list(forwarded_scan.ranges),
+                (
+                    "Stale fault changed LaserScan ranges"
+                ),
+            )
+
+            scan_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/scan",
+            )
+
+            odom_status = self.status_by_name(
+                diagnostics,
+                "ci_bot/odom",
+            )
+
+            expected_error_level = (
+                self.diagnostic_level_value(
+                    DiagnosticStatus.ERROR
+                )
+            )
+
+            expected_ok_level = (
+                self.diagnostic_level_value(
+                    DiagnosticStatus.OK
+                )
+            )
+
+            self.assertEqual(
+                self.diagnostic_level_value(
+                    scan_status.level
+                ),
+                expected_error_level,
+            )
+
+            self.assertEqual(
+                scan_status.message,
+                "SENSOR_TIMEOUT",
             )
 
             self.assertEqual(

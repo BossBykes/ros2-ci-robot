@@ -6,6 +6,7 @@ from sensor_msgs.msg import LaserScan
 
 import rclpy
 from rclpy.node import Node
+from rclpy.time import Time
 
 from ci_bot_monitor.health_evaluator import (
     STATUS_ERROR,
@@ -68,7 +69,18 @@ class SensorHealthMonitor(Node):
         )
 
     def scan_callback(self, message):
-        self.last_scan_time = self.get_clock().now()
+        stamp_is_zero = (
+            message.header.stamp.sec == 0
+            and message.header.stamp.nanosec == 0
+        )
+
+        if stamp_is_zero:
+            self.last_scan_time = self.get_clock().now()
+        else:
+            self.last_scan_time = Time.from_msg(
+                message.header.stamp
+            )
+
         self.scan_valid = scan_data_valid(message.ranges)
 
     def odom_callback(self, message):

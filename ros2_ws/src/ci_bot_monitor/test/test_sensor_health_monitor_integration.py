@@ -11,6 +11,8 @@ import launch
 import launch_pytest
 import launch_ros.actions
 
+from rclpy.duration import Duration
+
 
 pytestmark = pytest.mark.timeout(15)
 
@@ -200,6 +202,94 @@ def test_sensor_timeout_reports_error(ros_node):
     )
 
     assert scan_status.message == "SENSOR_TIMEOUT"
+
+    ros_node.destroy_subscription(
+        diagnostics_subscription
+    )
+
+
+@pytest.mark.launch(fixture=launch_description)
+def test_stale_scan_timestamp_reports_timeout(ros_node):
+    received_diagnostics = []
+
+    scan_publisher = ros_node.create_publisher(
+        LaserScan,
+        "/scan",
+        10,
+    )
+
+    odom_publisher = ros_node.create_publisher(
+        Odometry,
+        "/odom",
+        10,
+    )
+
+    diagnostics_subscription = ros_node.create_subscription(
+        DiagnosticArray,
+        "/diagnostics",
+        received_diagnostics.append,
+        10,
+    )
+
+    stale_scan = LaserScan()
+    stale_scan.ranges = [0.5, 1.0, 2.0]
+
+    stale_time = (
+        ros_node.get_clock().now()
+        - Duration(seconds=2.0)
+    )
+
+    stale_scan.header.stamp = stale_time.to_msg()
+
+    odom = Odometry()
+
+    publish_deadline = time.monotonic() + 1.0
+
+    while time.monotonic() < publish_deadline:
+        scan_publisher.publish(stale_scan)
+        odom_publisher.publish(odom)
+
+        rclpy.spin_once(
+            ros_node,
+            timeout_sec=0.05,
+        )
+
+    result = wait_for_diagnostics(
+        ros_node,
+        received_diagnostics,
+        lambda message: (
+            status_by_name(
+                message,
+                "ci_bot/scan",
+            ) is not None
+            and status_by_name(
+                message,
+                "ci_bot/odom",
+            ) is not None
+            and status_by_name(
+                message,
+                "ci_bot/scan",
+            ).message == "SENSOR_TIMEOUT"
+            and status_by_name(
+                message,
+                "ci_bot/odom",
+            ).message == "OK"
+        ),
+        timeout_sec=3.0,
+    )
+
+    scan_status = status_by_name(
+        result,
+        "ci_bot/scan",
+    )
+
+    odom_status = status_by_name(
+        result,
+        "ci_bot/odom",
+    )
+
+    assert scan_status.message == "SENSOR_TIMEOUT"
+    assert odom_status.message == "OK"
 
     ros_node.destroy_subscription(
         diagnostics_subscription
