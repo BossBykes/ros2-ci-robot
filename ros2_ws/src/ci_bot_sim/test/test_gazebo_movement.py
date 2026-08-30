@@ -222,6 +222,221 @@ class TestGazeboMovement(unittest.TestCase):
             "Timed out waiting for /odom from Gazebo"
         )
 
+    @staticmethod
+    def normalize_angle(angle):
+        return math.atan2(
+            math.sin(angle),
+            math.cos(angle),
+        )
+
+    @staticmethod
+    def yaw_from_odometry(odometry):
+        orientation = (
+            odometry.pose.pose.orientation
+        )
+
+        siny_cosp = 2.0 * (
+            orientation.w * orientation.z
+            + orientation.x * orientation.y
+        )
+
+        cosy_cosp = 1.0 - 2.0 * (
+            orientation.y * orientation.y
+            + orientation.z * orientation.z
+        )
+
+        return math.atan2(
+            siny_cosp,
+            cosy_cosp,
+        )
+
+    def publish_stop(self):
+        stop_command = Twist()
+
+        deadline = time.monotonic() + 0.25
+
+        while time.monotonic() < deadline:
+            self.command_publisher.publish(
+                stop_command
+            )
+
+            rclpy.spin_once(
+                self.node,
+                timeout_sec=0.05,
+            )
+
+    def drive_to_point(
+        self,
+        target_x,
+        target_y,
+        timeout_sec=6.0,
+        position_tolerance=0.05,
+    ):
+        deadline = time.monotonic() + timeout_sec
+
+        while time.monotonic() < deadline:
+            rclpy.spin_once(
+                self.node,
+                timeout_sec=0.05,
+            )
+
+            if not self.received_odometry:
+                continue
+
+            odometry = self.received_odometry[-1]
+
+            current_x = (
+                odometry.pose.pose.position.x
+            )
+
+            current_y = (
+                odometry.pose.pose.position.y
+            )
+
+            delta_x = target_x - current_x
+            delta_y = target_y - current_y
+
+            distance = math.hypot(
+                delta_x,
+                delta_y,
+            )
+
+            if distance <= position_tolerance:
+                self.publish_stop()
+                return odometry
+
+            target_heading = math.atan2(
+                delta_y,
+                delta_x,
+            )
+
+            current_yaw = self.yaw_from_odometry(
+                odometry
+            )
+
+            heading_error = self.normalize_angle(
+                target_heading - current_yaw
+            )
+
+            command = Twist()
+
+            command.angular.z = max(
+                -0.8,
+                min(
+                    0.8,
+                    1.8 * heading_error,
+                ),
+            )
+
+            if abs(heading_error) < 0.45:
+                command.linear.x = min(
+                    0.25,
+                    0.8 * distance,
+                )
+
+            self.command_publisher.publish(
+                command
+            )
+
+        self.publish_stop()
+
+        if self.received_odometry:
+            odometry = self.received_odometry[-1]
+
+            current_x = (
+                odometry.pose.pose.position.x
+            )
+
+            current_y = (
+                odometry.pose.pose.position.y
+            )
+
+            remaining_distance = math.hypot(
+                target_x - current_x,
+                target_y - current_y,
+            )
+        else:
+            remaining_distance = math.inf
+
+        self.fail(
+            (
+                "Timed out driving to waypoint: "
+                f"target=({target_x:.3f}, "
+                f"{target_y:.3f}), "
+                "remaining_distance="
+                f"{remaining_distance:.3f}"
+            )
+        )
+
+    def rotate_to_yaw(
+        self,
+        target_yaw,
+        timeout_sec=5.0,
+        yaw_tolerance=0.04,
+    ):
+        deadline = time.monotonic() + timeout_sec
+
+        while time.monotonic() < deadline:
+            rclpy.spin_once(
+                self.node,
+                timeout_sec=0.05,
+            )
+
+            if not self.received_odometry:
+                continue
+
+            odometry = self.received_odometry[-1]
+
+            current_yaw = self.yaw_from_odometry(
+                odometry
+            )
+
+            yaw_error = self.normalize_angle(
+                target_yaw - current_yaw
+            )
+
+            if abs(yaw_error) <= yaw_tolerance:
+                self.publish_stop()
+                return odometry
+
+            command = Twist()
+
+            command.angular.z = max(
+                -0.8,
+                min(
+                    0.8,
+                    1.5 * yaw_error,
+                ),
+            )
+
+            self.command_publisher.publish(
+                command
+            )
+
+        self.publish_stop()
+
+        if self.received_odometry:
+            current_yaw = self.yaw_from_odometry(
+                self.received_odometry[-1]
+            )
+
+            remaining_error = abs(
+                self.normalize_angle(
+                    target_yaw - current_yaw
+                )
+            )
+        else:
+            remaining_error = math.inf
+
+        self.fail(
+            (
+                "Timed out rotating to target yaw: "
+                f"target_yaw={target_yaw:.3f}, "
+                "remaining_error="
+                f"{remaining_error:.3f}"
+            )
+        )
+
     def find_matching_scan_pair(self):
         forwarded_by_stamp = {
             self.stamp_key(message): message
@@ -1030,3 +1245,166 @@ class TestGazeboMovement(unittest.TestCase):
             )
         finally:
             self.set_fault_mode("normal")
+
+    def test_waypoint_navigation_regression(self):
+        self.set_fault_mode("normal")
+
+        self.received_odometry.clear()
+
+        start_odometry = self.wait_for_odometry()
+
+        start_x = (
+            start_odometry.pose.pose.position.x
+        )
+
+        start_y = (
+            start_odometry.pose.pose.position.y
+        )
+
+        start_yaw = self.yaw_from_odometry(
+            start_odometry
+        )
+
+        leg_distance = 0.50
+
+        first_target_x = (
+            start_x
+            + leg_distance * math.cos(start_yaw)
+        )
+
+        first_target_y = (
+            start_y
+            + leg_distance * math.sin(start_yaw)
+        )
+
+        turn_target_yaw = self.normalize_angle(
+            start_yaw + math.pi / 2.0
+        )
+
+        second_target_x = (
+            first_target_x
+            + leg_distance
+            * math.cos(turn_target_yaw)
+        )
+
+        second_target_y = (
+            first_target_y
+            + leg_distance
+            * math.sin(turn_target_yaw)
+        )
+
+        try:
+            first_odometry = self.drive_to_point(
+                first_target_x,
+                first_target_y,
+            )
+
+            first_x = (
+                first_odometry.pose.pose.position.x
+            )
+
+            first_y = (
+                first_odometry.pose.pose.position.y
+            )
+
+            first_position_error = math.hypot(
+                first_target_x - first_x,
+                first_target_y - first_y,
+            )
+
+            self.assertLessEqual(
+                first_position_error,
+                0.08,
+                (
+                    "Robot missed first navigation "
+                    "waypoint: "
+                    f"error={first_position_error:.3f} m"
+                ),
+            )
+
+            turn_odometry = self.rotate_to_yaw(
+                turn_target_yaw
+            )
+
+            achieved_turn_yaw = (
+                self.yaw_from_odometry(
+                    turn_odometry
+                )
+            )
+
+            turn_error = abs(
+                self.normalize_angle(
+                    turn_target_yaw
+                    - achieved_turn_yaw
+                )
+            )
+
+            self.assertLessEqual(
+                turn_error,
+                0.08,
+                (
+                    "Robot missed navigation turn: "
+                    f"error={turn_error:.3f} rad"
+                ),
+            )
+
+            self.drive_to_point(
+                second_target_x,
+                second_target_y,
+            )
+
+            final_odometry = self.rotate_to_yaw(
+                turn_target_yaw
+            )
+
+            final_x = (
+                final_odometry.pose.pose.position.x
+            )
+
+            final_y = (
+                final_odometry.pose.pose.position.y
+            )
+
+            final_yaw = self.yaw_from_odometry(
+                final_odometry
+            )
+
+            final_position_error = math.hypot(
+                second_target_x - final_x,
+                second_target_y - final_y,
+            )
+
+            final_yaw_error = abs(
+                self.normalize_angle(
+                    turn_target_yaw - final_yaw
+                )
+            )
+
+            self.assertLessEqual(
+                final_position_error,
+                0.08,
+                (
+                    "Robot missed final navigation "
+                    "waypoint: "
+                    f"target=({second_target_x:.3f}, "
+                    f"{second_target_y:.3f}), "
+                    f"actual=({final_x:.3f}, "
+                    f"{final_y:.3f}), "
+                    "error="
+                    f"{final_position_error:.3f} m"
+                ),
+            )
+
+            self.assertLessEqual(
+                final_yaw_error,
+                0.12,
+                (
+                    "Robot final navigation heading "
+                    "was outside tolerance: "
+                    f"target_yaw={turn_target_yaw:.3f}, "
+                    f"actual_yaw={final_yaw:.3f}, "
+                    f"error={final_yaw_error:.3f} rad"
+                ),
+            )
+        finally:
+            self.publish_stop()
